@@ -294,6 +294,7 @@ finalize() {
 	# Enable SSH login for user root (#3)
 	sed -i '/^#PermitRootLogin\s/s/.*/&\nPermitRootLogin yes/' /etc/ssh/sshd_config
 
+	prepare_rankmirrors()
 	_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
     	sed -e 's/^#Server/Server/' -e '/^#/d' |
     	./rankmirrors.sh -n 5 -vw - > /etc/pacman.d/mirrorlist
