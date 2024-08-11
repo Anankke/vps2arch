@@ -42,7 +42,7 @@ get_mirrors() {
     [ -z "$country" ] && country=$(get_country || echo -n "all")
     _download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
     sed -e 's/^#Server/Server/' -e '/^#/d' | 
-    ./rankmirrors.sh -n 5 -vw - | 
+    ./rankmirrors.sh -n 5 -w - | 
     grep -oP '(?<=Server = ).*(?=\$repo/)' || 
     get_mirrors all
 }
@@ -294,10 +294,14 @@ finalize() {
 	# Enable SSH login for user root (#3)
 	sed -i '/^#PermitRootLogin\s/s/.*/&\nPermitRootLogin yes/' /etc/ssh/sshd_config
 
-	prepare_rankmirrors()
-	_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
-    	sed -e 's/^#Server/Server/' -e '/^#/d' |
-    	rankmirrors -n 10 -vw - > /etc/pacman.d/mirrorlist
+	_download() { curl -A vps2arch -fL "$@" ; }
+	get_country() {
+		_download "https://api.ip.sb/geoip" | grep -oP '(?<=country_code":")\w+'
+	}
+
+	_download "https://archlinux.org/mirrorlist/?country=$(get_country)&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
+    	sed -e 's/^#Server/Server/' -e '/^#/d' | 
+    	rankmirrors -n 10 -w - > /etc/pacman.d/mirrorlist
 	pacman -Syy
 	
 	cat <<-EOF
