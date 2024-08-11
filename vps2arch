@@ -29,11 +29,22 @@ get_country() {
 	_download "https://api.ip.sb/geoip" | grep -oP '(?<=country_code":")\w+'
 }
 
+prepare_rankmirrors() {
+    _download "https://gitlab.archlinux.org/pacman/pacman-contrib/-/raw/master/src/rankmirrors.sh.in?ref_type=heads&inline=false" > rankmirrors.sh
+    chmod +x rankmirrors.sh
+}
+
 get_mirrors() {
-	country=$1
-	
-	[ -z $country ] && country=$(get_country || echo -n "all")
-	_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | grep -oP '(?<=#Server = ).*(?=\$repo/)' || get_mirrors all
+    country=$1
+    if [ ! -f "./rankmirrors.sh" ]; then
+        prepare_rankmirrors
+    fi
+    [ -z "$country" ] && country=$(get_country || echo -n "all")
+    _download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
+    sed -e 's/^#Server/Server/' -e '/^#/d' | 
+    ./rankmirrors.sh -n 5 -vw - | 
+    grep -oP '(?<=Server = ).*(?=\$repo/)' || 
+    get_mirrors all
 }
 
 cpu_type=$(uname -m)
@@ -132,7 +143,7 @@ delete_all() {
 }
 
 install_packages() {
-	local packages="base linux lvm2 openssh vim iptables-nft"
+	local packages="base linux lvm2 openssh vim iptables-nft rankmirrors"
 	[ "$bootloader" != "none" ] && packages="$packages $bootloader"
 	# XXX Install gptdisk for syslinux. To be removed then FS#45029 will be closed
 	[ "$bootloader" = "syslinux" ] && packages="$packages gptfdisk"
@@ -283,6 +294,11 @@ finalize() {
 	# Enable SSH login for user root (#3)
 	sed -i '/^#PermitRootLogin\s/s/.*/&\nPermitRootLogin yes/' /etc/ssh/sshd_config
 
+	_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
+    	sed -e 's/^#Server/Server/' -e '/^#/d' |
+    	rankmirrors.sh -n 5 -vw - > /etc/pacman.d/mirrorlist
+	pacman -Syy
+	
 	cat <<-EOF
 		Hi,
 		your VM has successfully been reimaged with Arch Linux.
