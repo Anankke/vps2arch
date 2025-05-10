@@ -298,6 +298,13 @@ finalize() {
 	get_country() {
 		_download "https://api.ip.sb/geoip" | grep -oP '(?<=country_code":")\w+'
 	}
+	if [ -z "$mirrors" ]; then
+		_download "https://archlinux.org/mirrorlist/?country=$(get_country)&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
+		sed -e 's/^#Server/Server/' -e '/^#/d' | 
+		rankmirrors -n 10 -w - > /etc/pacman.d/mirrorlist
+	else
+		echo "Server = $mirrors/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
+	fi
 
 	_download "https://archlinux.org/mirrorlist/?country=$(get_country)&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
     	sed -e 's/^#Server/Server/' -e '/^#/d' | 
