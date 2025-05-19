@@ -248,29 +248,49 @@ configure_network() {
 
 	# FIXME Not supported for "P2P" interfaces, such as venet, yet
 	if [ "$network" = "systemd-networkd" ]; then
-		cat > /etc/systemd/network/default.network <<-EOF
+		# If interface has a DHCP-assigned IPv4, use DHCP; otherwise use static
+		if ip -4 addr show dev "$dev" | grep -qw dynamic; then
+			cat > /etc/systemd/network/default.network <<-EOF
+			[Match]
+			Name=$dev
+
+			[Network]
+			DHCP=yes
+			EOF
+		else
+			cat > /etc/systemd/network/default.network <<-EOF
 			[Match]
 			Name=$dev
 
 			[Network]
 			Gateway=$gateway
-		EOF
-		for ip in $ip; do
-			echo "Address=$ip"
-		done >> /etc/systemd/network/default.network
+			EOF
+			for ip in $ip; do
+				echo "Address=$ip"
+			done >> /etc/systemd/network/default.network
+		fi
 		systemctl enable systemd-networkd
 	elif [ "$network" = "netctl" ]; then
-		cat > /etc/netctl/default <<-EOF
+		# If interface has a DHCP-assigned IPv4, use DHCP; otherwise use static
+		if ip -4 addr show dev "$dev" | grep -qw dynamic; then
+			cat > /etc/netctl/default <<-EOF
+			Interface=$dev
+			Connection=ethernet
+			IP=dhcp
+			EOF
+		else
+			cat > /etc/netctl/default <<-EOF
 			Interface=$dev
 			Connection=ethernet
 			IP=static
 			Address=($ip)
-		EOF
-		if [ "$gateway" = "0.0.0.0" ]; then
-			echo 'Routes=(0.0.0.0/0)'
-		else
-			echo "Gateway=$gateway"
-		fi >> /etc/netctl/default
+			EOF
+			if [ "$gateway" = "0.0.0.0" ]; then
+				echo 'Routes=(0.0.0.0/0)'
+			else
+				echo "Gateway=$gateway"
+			fi >> /etc/netctl/default
+		fi
 		netctl enable default
 	fi
 
