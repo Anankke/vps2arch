@@ -339,21 +339,29 @@ finalize() {
 	# Enable SSH login for user root (#3)
 	sed -i '/^#PermitRootLogin\s/s/.*/&\nPermitRootLogin yes/' /etc/ssh/sshd_config
 
-	_download() { curl -A vps2arch -fL "$@" ; }
-	get_country() {
-		_download "https://api.ip.sb/geoip" | grep -oP '(?<=country_code":")\w+'
-	}
+	# Configure pacman mirrors
 	if [ -z "$mirrors" ]; then
-		_download "https://archlinux.org/mirrorlist/?country=$(get_country)&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
-		sed -e 's/^#Server/Server/' -e '/^#/d' | 
-		rankmirrors -n 10 -w - > /etc/pacman.d/mirrorlist
+		# Use the same get_country function from earlier with fallbacks
+		country=$(get_country)
+		_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
+		sed -e 's/^#Server/Server/' -e '/^#/d' > /etc/pacman.d/mirrorlist.tmp
+		
+		# Only use rankmirrors if we got valid mirrors
+		if [ -s /etc/pacman.d/mirrorlist.tmp ] && grep -q "Server" /etc/pacman.d/mirrorlist.tmp; then
+			rankmirrors -n 10 -w /etc/pacman.d/mirrorlist.tmp > /etc/pacman.d/mirrorlist || 
+			mv /etc/pacman.d/mirrorlist.tmp /etc/pacman.d/mirrorlist
+		else
+			# Fallback to all mirrors
+			_download "https://archlinux.org/mirrorlist/?country=all&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
+			sed -e 's/^#Server/Server/' -e '/^#/d' | 
+			head -20 > /etc/pacman.d/mirrorlist
+		fi
+		rm -f /etc/pacman.d/mirrorlist.tmp
 	else
+		# Use specified mirror
 		echo "Server = $mirrors/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
 	fi
-
-	_download "https://archlinux.org/mirrorlist/?country=$(get_country)&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
-    	sed -e 's/^#Server/Server/' -e '/^#/d' | 
-    	rankmirrors -n 10 -w - > /etc/pacman.d/mirrorlist
+	
 	pacman -Syy
 	
 	cat <<-EOF
