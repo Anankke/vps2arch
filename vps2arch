@@ -26,7 +26,32 @@ else
 fi
 
 get_country() {
-	_download "https://api.ip.sb/geoip" | grep -oP '(?<=country_code":")\w+'
+	# Try multiple APIs in case one fails
+	local country
+	
+	# Try ipapi.co first
+	country=$(_download "https://ipapi.co/country_code" 2>/dev/null || true)
+	if [ -n "$country" ] && [ "$country" != "403" ]; then
+		echo "$country"
+		return
+	fi
+	
+	# Try ifconfig.co
+	country=$(_download "https://ifconfig.co/country-iso" 2>/dev/null || true)
+	if [ -n "$country" ] && [ "$country" != "403" ]; then
+		echo "$country"
+		return
+	fi
+	
+	# Try ip-api.com
+	country=$(_download "http://ip-api.com/json/" 2>/dev/null | grep -oP '(?<="countryCode":")\w+' || true)
+	if [ -n "$country" ]; then
+		echo "$country"
+		return
+	fi
+	
+	# Default to 'all' if all APIs fail
+	echo "all"
 }
 
 prepare_rankmirrors() {
