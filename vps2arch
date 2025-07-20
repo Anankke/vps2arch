@@ -358,8 +358,11 @@ finalize() {
 		fi
 		rm -f /etc/pacman.d/mirrorlist.tmp
 	else
-		# Use specified mirror
-		echo "Server = $mirrors/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
+		# Use specified mirror(s)
+		> /etc/pacman.d/mirrorlist
+		for m in $mirrors; do
+			echo "Server = $m/\$repo/os/\$arch" >> /etc/pacman.d/mirrorlist
+		done
 	fi
 	
 	pacman -Syy
