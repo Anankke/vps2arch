@@ -128,8 +128,8 @@ chroot_exec() {
 
 configure_chroot() {
 	local m
-	if ! has_landlock; then
-		echo 'DisableSandbox' >> "/root.$cpu_type/etc/pacman.conf"
+	if is_openvz || is_lxc || ! has_landlock; then
+		sed -i '/^\[options\]/a DisableSandbox' "/root.$cpu_type/etc/pacman.conf"
 	fi
 	for m in $mirrors; do
 		echo 'Server = '"$m"'/$repo/os/$arch'
