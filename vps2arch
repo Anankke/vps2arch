@@ -54,20 +54,18 @@ get_country() {
 	echo "all"
 }
 
-prepare_rankmirrors() {
-    _download "https://gitlab.archlinux.org/pacman/pacman-contrib/-/raw/master/src/rankmirrors.sh.in?ref_type=heads&inline=false" > rankmirrors.sh
-    chmod +x rankmirrors.sh
-}
-
 get_mirrors() {
     country=$1
-    if [ ! -f "./rankmirrors.sh" ]; then
-        prepare_rankmirrors
-    fi
     [ -z "$country" ] && country=$(get_country || echo -n "all")
+    
+    # Priority reliable Tier 1 / Global mirrors that always carry ISOs/Bootstrap
+    echo "https://geo.mirror.pkgbuild.com/archlinux/"
+    echo "https://mirrors.kernel.org/archlinux/"
+    echo "https://mirror.rackspace.com/archlinux/"
+    
     _download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
     sed -e 's/^#Server/Server/' -e '/^#/d' | 
-    ./rankmirrors.sh -n 5 -w - | 
+    head -n 10 | 
     grep -oP '(?<=Server = ).*(?=\$repo/)' || 
     get_mirrors all
 }
@@ -353,10 +351,9 @@ finalize() {
 		_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
 		sed -e 's/^#Server/Server/' -e '/^#/d' > /etc/pacman.d/mirrorlist.tmp
 		
-		# Only use rankmirrors if we got valid mirrors
+		# Only write valid mirrors
 		if [ -s /etc/pacman.d/mirrorlist.tmp ] && grep -q "Server" /etc/pacman.d/mirrorlist.tmp; then
-			rankmirrors -n 10 -w /etc/pacman.d/mirrorlist.tmp > /etc/pacman.d/mirrorlist || 
-			mv /etc/pacman.d/mirrorlist.tmp /etc/pacman.d/mirrorlist
+			head -n 10 /etc/pacman.d/mirrorlist.tmp > /etc/pacman.d/mirrorlist
 		else
 			# Fallback to all mirrors
 			_download "https://archlinux.org/mirrorlist/?country=all&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
