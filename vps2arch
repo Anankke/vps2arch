@@ -368,9 +368,13 @@ finalize() {
 			echo "Server = $m/\$repo/os/\$arch" >> /etc/pacman.d/mirrorlist
 		done
 	fi
-	
-	pacman -Syy
-	
+
+	if is_openvz || is_lxc || ! has_landlock; then
+		pacman --disable-sandbox -Syy
+	else
+		pacman -Syy
+	fi
+
 	cat <<-EOF
 		Hi,
 		your VM has successfully been reimaged with Arch Linux.
