@@ -263,16 +263,43 @@ configure_bootloader() {
 	fi
 }
 
-configure_network() {
-	local gateway dev ip
+get_default_route() {
+	ip "$1" route show default | awk '
+		$1 == "default" {
+			gateway = device = ""
+			active = 1
+			for (i = 2; i <= NF; i++) {
+				if ($i == "via") gateway = $(i + 1)
+				if ($i == "dev") device = $(i + 1)
+				if ($i == "linkdown") active = 0
+			}
+			if (active && gateway != "" && device != "") {
+				print gateway, device
+				exit
+			}
+		}
+	'
+}
 
-	dev=$(ls /sys/class/net | grep -v lo)
-	if [ -n "$(ip -4 route show default | awk '{ print $3 }')" ]; then
-		gateway=$(ip -4 route show default | awk '{ print $3 }')
-		set -- $(ip addr show dev "$dev" | awk '($1 == "inet") { print $2 }')
+configure_network() {
+	local gateway dev ip route
+
+	route=$(get_default_route -4)
+	if [ -n "$route" ]; then
+		set -- $route
+		gateway=$1
+		dev=$2
+		set -- $(ip -4 addr show dev "$dev" | awk '($1 == "inet") { print $2 }')
 	else
-		gateway=$(ip -6 route show default | awk '{ print $3 }')
-		set -- $(ip addr show dev "$dev" | awk '($1 == "inet6" && $2 !~ /^fe80/) { print $2 }')
+		route=$(get_default_route -6)
+		if [ -z "$route" ]; then
+			echo "No usable default route found" >&2
+			return 1
+		fi
+		set -- $route
+		gateway=$1
+		dev=$2
+		set -- $(ip -6 addr show dev "$dev" | awk '($1 == "inet6" && $2 !~ /^fe80/) { print $2 }')
 	fi
 	ip=$@
 
