@@ -169,6 +169,11 @@ delete_all() {
 	find / \( ! -path '/dev/*' -and ! -path '/proc/*' -and ! -path '/sys/*' -and ! -path '/selinux/*' -and ! -path "/root.$cpu_type/*" \) -delete 2>/dev/null || true
 }
 
+bootstrap_chroot_exec() {
+	"/root.$cpu_type/usr/lib"/ld-*.so.2 --library-path "/root.$cpu_type/usr/lib" \
+		"/root.$cpu_type/usr/bin/chroot" "/root.$cpu_type" "$@"
+}
+
 install_packages() {
 	local packages="base linux lvm2 openssh vim iptables-nft pacman-contrib"
 	[ "$bootloader" != "none" ] && packages="$packages $bootloader"
@@ -180,8 +185,21 @@ install_packages() {
 		[ "$mountpoint" = "/" -a "$filesystem" = "xfs" ] && packages="$packages xfsprogs"
 	done < /proc/mounts
 	# Black magic!
-	"/root.$cpu_type/usr/lib"/ld-*.so.2 --library-path "/root.$cpu_type/usr/lib" \
-		"/root.$cpu_type/usr/bin/chroot" "/root.$cpu_type" /usr/bin/pacstrap -M /mnt $packages
+	if ! bootstrap_chroot_exec /usr/bin/pacstrap -M /mnt $packages; then
+		echo "pacstrap failed; disabling the first mirror and retrying once" >&2
+		bootstrap_chroot_exec /usr/bin/bash -c '
+			mirrorlist=/etc/pacman.d/mirrorlist
+			if grep -q "^Server = " "$mirrorlist"; then
+				sed -i "0,/^Server = /s|^Server = |# disabled after pacstrap failure: Server = |" "$mirrorlist"
+			fi
+			for pkg in /mnt/var/cache/pacman/pkg/*.pkg.tar.zst; do
+				[ -e "$pkg" ] || continue
+				[ -f "$pkg.sig" ] || rm -f "$pkg"
+			done
+			rm -f /mnt/var/cache/pacman/pkg/*.part
+		'
+		bootstrap_chroot_exec /usr/bin/pacstrap -M /mnt $packages
+	fi
 	cp -L "/root.$cpu_type/etc/resolv.conf" /etc
 }
 
