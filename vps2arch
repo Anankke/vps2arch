@@ -85,7 +85,7 @@ download() {
 	shift
 	tmp=$(mktemp) || return 1
 	for x in $mirrors; do
-		if _download "$x$path" > "$tmp"; then
+		if _download "$(mirror_url "$x" "$path")" > "$tmp"; then
 			cat "$tmp"
 			status=$?
 			rm -f "$tmp"
@@ -96,11 +96,16 @@ download() {
 	return 1
 }
 
+mirror_url() {
+	local base="${1%/}" path="${2#/}"
+	printf '%s/%s\n' "$base" "$path"
+}
+
 write_mirrorlist() {
 	local path="$1" only_first="${2:-0}" m
 	: > "$path"
 	for m in $mirrors; do
-		printf 'Server = %s/$repo/os/$arch\n' "$m" >> "$path"
+		printf 'Server = %s\n' "$(mirror_url "$m" '$repo/os/$arch')" >> "$path"
 		[ "$only_first" -eq 1 ] && break
 	done
 	return 0
