@@ -54,20 +54,24 @@ get_country() {
 	echo "all"
 }
 
+get_mirror_candidates() {
+	local country="$1"
+	_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" 2>/dev/null |
+		sed -e 's/^#Server/Server/' -e '/^#/d' |
+		awk -F 'Server = ' '/^Server = / { sub(/\$repo.*/, "", $2); sub(/\/$/, "", $2); print $2 }' |
+		head -n 20
+}
+
 get_mirrors() {
-    country=$1
-    [ -z "$country" ] && country=$(get_country || echo -n "all")
-    
-    # Priority reliable Tier 1 / Global mirrors that always carry ISOs/Bootstrap
-    echo "https://geo.mirror.pkgbuild.com/archlinux/"
-    echo "https://mirrors.kernel.org/archlinux/"
-    echo "https://mirror.rackspace.com/archlinux/"
-    
-    _download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
-    sed -e 's/^#Server/Server/' -e '/^#/d' | 
-    head -n 10 | 
-    grep -oP '(?<=Server = ).*(?=\$repo/)' || 
-    get_mirrors all
+	local country="${1:-}" list
+	[ -n "$country" ] || country=$(get_country || echo -n "all")
+
+	list=$(get_mirror_candidates "$country" || true)
+	if [ -z "$list" ] && [ "$country" != all ]; then
+		list=$(get_mirror_candidates all || true)
+	fi
+	[ -n "$list" ] || return 1
+	printf '%s\n' "$list"
 }
 
 cpu_type=$(uname -m)
@@ -77,12 +81,92 @@ is_lxc() { grep -aqw container=lxc /proc/1/environ ; }
 has_landlock() { [ -e /sys/kernel/security/landlock ] ; }
 
 download() {
-	local path="$1" x=
+	local path="$1" x= tmp status
 	shift
+	tmp=$(mktemp) || return 1
 	for x in $mirrors; do
-		_download "$x$path" && return 0
+		if _download "$x$path" > "$tmp"; then
+			cat "$tmp"
+			status=$?
+			rm -f "$tmp"
+			return "$status"
+		fi
 	done
+	rm -f "$tmp"
 	return 1
+}
+
+write_mirrorlist() {
+	local path="$1" only_first="${2:-0}" m
+	: > "$path"
+	for m in $mirrors; do
+		printf 'Server = %s/$repo/os/$arch\n' "$m" >> "$path"
+		[ "$only_first" -eq 1 ] && break
+	done
+	return 0
+}
+
+mirror_count() {
+	local count=0 m
+	for m in $mirrors; do
+		count=$((count + 1))
+	done
+	printf '%s\n' "$count"
+}
+
+rotate_mirrors() {
+	local first
+	set -- $mirrors
+	[ "$#" -gt 1 ] || return 1
+	first=$1
+	shift
+	mirrors="$* $first"
+}
+
+cleanup_pacman_cache() {
+	local cache_dir="$1" pkg
+	[ -d "$cache_dir" ] || return 0
+	for pkg in "$cache_dir"/*.pkg.tar.*; do
+		[ -e "$pkg" ] || continue
+		case "$pkg" in
+			*.sig) continue ;;
+		esac
+		[ -f "$pkg.sig" ] || rm -f "$pkg"
+	done
+	rm -f "$cache_dir"/*.part
+}
+
+run_with_mirror_rotation() {
+	local runner="$1" mirrorlist_path="$2" cache_dir="$3" status attempts=0
+	shift 3
+	attempts=$(mirror_count)
+	[ "$attempts" -gt 0 ] || return 1
+
+	while :; do
+		write_mirrorlist "$mirrorlist_path" 1
+		case "$runner" in
+			bootstrap)
+				if bootstrap_chroot_exec "$@"; then status=0; else status=$?; fi
+				;;
+			chroot)
+				if chroot_exec "$@"; then status=0; else status=$?; fi
+				;;
+			host)
+				if pacman "$@"; then status=0; else status=$?; fi
+				;;
+			*) return 2 ;;
+		esac
+		[ "$status" -eq 0 ] && {
+			write_mirrorlist "$mirrorlist_path"
+			return 0
+		}
+
+		cleanup_pacman_cache "$cache_dir"
+		attempts=$((attempts - 1))
+		[ "$attempts" -gt 0 ] || return "$status"
+		rotate_mirrors || return "$status"
+		echo "pacman download failed; rotating to the next mirror" >&2
+	done
 }
 
 download_and_extract_bootstrap() {
@@ -125,22 +209,24 @@ chroot_exec() {
 }
 
 configure_chroot() {
-	local m
 	if is_openvz || is_lxc || ! has_landlock; then
 		sed -i '/^\[options\]/a DisableSandbox' "/root.$cpu_type/etc/pacman.conf"
 	fi
-	for m in $mirrors; do
-		echo 'Server = '"$m"'/$repo/os/$arch'
-	done >> "/root.$cpu_type/etc/pacman.d/mirrorlist"
+	write_mirrorlist "/root.$cpu_type/etc/pacman.d/mirrorlist"
 	# Install and initialize haveged if needed
 	if ! is_openvz && ! pidof haveged >/dev/null; then
 		# Disable signature check, install and launch haveged and re-enable signature checks.
 		sed -i.bak "s/^[[:space:]]*SigLevel[[:space:]]*=.*$/SigLevel = Never/" "/root.$cpu_type/etc/pacman.conf"
-		chroot_exec 'pacman --needed --noconfirm -Sy haveged && haveged'
+		run_with_mirror_rotation chroot "/root.$cpu_type/etc/pacman.d/mirrorlist" \
+			"/root.$cpu_type/var/cache/pacman/pkg" \
+			pacman --needed --noconfirm -Sy haveged
+		chroot_exec 'haveged'
 		mv "/root.$cpu_type/etc/pacman.conf.bak" "/root.$cpu_type/etc/pacman.conf"
 	fi
 	chroot_exec 'pacman-key --init && pacman-key --populate archlinux'
-	chroot_exec 'pacman --needed --noconfirm -Sy archlinux-keyring'
+	run_with_mirror_rotation chroot "/root.$cpu_type/etc/pacman.d/mirrorlist" \
+		"/root.$cpu_type/var/cache/pacman/pkg" \
+		pacman --needed --noconfirm -Sy archlinux-keyring
 	# Generate fstab
 	chroot_exec 'genfstab /mnt >> /etc/fstab'
 
@@ -184,22 +270,12 @@ install_packages() {
 	while read -r _ mountpoint filesystem _; do
 		[ "$mountpoint" = "/" -a "$filesystem" = "xfs" ] && packages="$packages xfsprogs"
 	done < /proc/mounts
-	# Black magic!
-	if ! bootstrap_chroot_exec /usr/bin/pacstrap -M /mnt $packages; then
-		echo "pacstrap failed; disabling the first mirror and retrying once" >&2
-		bootstrap_chroot_exec /usr/bin/bash -c '
-			mirrorlist=/etc/pacman.d/mirrorlist
-			if grep -q "^Server = " "$mirrorlist"; then
-				sed -i "0,/^Server = /s|^Server = |# disabled after pacstrap failure: Server = |" "$mirrorlist"
-			fi
-			for pkg in /mnt/var/cache/pacman/pkg/*.pkg.tar.zst; do
-				[ -e "$pkg" ] || continue
-				[ -f "$pkg.sig" ] || rm -f "$pkg"
-			done
-			rm -f /mnt/var/cache/pacman/pkg/*.part
-		'
-		bootstrap_chroot_exec /usr/bin/pacstrap -M /mnt $packages
-	fi
+	run_with_mirror_rotation bootstrap "/root.$cpu_type/etc/pacman.d/mirrorlist" \
+		"/root.$cpu_type/mnt/var/cache/pacman/pkg" \
+		/usr/bin/pacstrap -M /mnt $packages || {
+			echo "pacstrap failed after exhausting all mirrors" >&2
+			exit 1
+		}
 	cp -L "/root.$cpu_type/etc/resolv.conf" /etc
 }
 
@@ -391,34 +467,21 @@ finalize() {
 
 	# Configure pacman mirrors
 	if [ -z "$mirrors" ]; then
-		# Use the same get_country function from earlier with fallbacks
-		country=$(get_country)
-		_download "https://archlinux.org/mirrorlist/?country=$country&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
-		sed -e 's/^#Server/Server/' -e '/^#/d' > /etc/pacman.d/mirrorlist.tmp
-		
-		# Only write valid mirrors
-		if [ -s /etc/pacman.d/mirrorlist.tmp ] && grep -q "Server" /etc/pacman.d/mirrorlist.tmp; then
-			head -n 10 /etc/pacman.d/mirrorlist.tmp > /etc/pacman.d/mirrorlist
-		else
-			# Fallback to all mirrors
-			_download "https://archlinux.org/mirrorlist/?country=all&protocol=http&protocol=https&ip_version=4&use_mirror_status=on" | 
-			sed -e 's/^#Server/Server/' -e '/^#/d' | 
-			head -20 > /etc/pacman.d/mirrorlist
-		fi
-		rm -f /etc/pacman.d/mirrorlist.tmp
-	else
-		# Use specified mirror(s)
-		> /etc/pacman.d/mirrorlist
-		for m in $mirrors; do
-			echo "Server = $m/\$repo/os/\$arch" >> /etc/pacman.d/mirrorlist
-		done
+		mirrors=$(get_mirrors) || {
+			echo "Unable to obtain an Arch mirror list" >&2
+			return 1
+		}
 	fi
+	write_mirrorlist /etc/pacman.d/mirrorlist
 
 	if is_openvz || is_lxc || ! has_landlock; then
-		pacman --disable-sandbox -Syy
+		run_with_mirror_rotation host /etc/pacman.d/mirrorlist /var/cache/pacman/pkg --disable-sandbox -Syy
 	else
-		pacman -Syy
-	fi
+		run_with_mirror_rotation host /etc/pacman.d/mirrorlist /var/cache/pacman/pkg -Syy
+	fi || {
+		echo "pacman mirror list exhausted" >&2
+		return 1
+	}
 
 	cat <<-EOF
 		Hi,
