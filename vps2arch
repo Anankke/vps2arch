@@ -174,8 +174,34 @@ run_with_mirror_rotation() {
 	done
 }
 
+# A run that dies after the mounts below are in place (dropped SSH transport,
+# killed CI task) leaves the bootstrap root behind with /sys mounted read-only
+# inside it. The next run's tar then fails on root.$cpu_type/sys and can never
+# succeed until the leftovers are gone.
+discard_stale_bootstrap_root() {
+	local target="/root.$cpu_type" mountpoint
+	[ -e "$target" ] || return 0
+	echo "discarding bootstrap root left behind by a previous run: $target" >&2
+	# Deepest first, so dev/pts and mnt/boot are released before their parents.
+	awk -v t="$target" '$2 == t || index($2, t "/") == 1 { print $2 }' /proc/self/mounts |
+		sort -r |
+		while read -r mountpoint; do
+			umount "$mountpoint" 2>/dev/null || umount -l "$mountpoint"
+		done
+	# Bail out rather than delete while anything is still mounted: rm -rf would
+	# follow the mount out of the bootstrap root and destroy the live /dev.
+	# Set a flag instead of calling exit in the body; awk runs END even then, so
+	# an exit there would overwrite the status and the guard would never fire.
+	if awk -v t="$target" '$2 == t || index($2, t "/") == 1 { found = 1 } END { exit !found }' /proc/self/mounts; then
+		echo "$target still has mounts under it; refusing to remove it" >&2
+		exit 1
+	fi
+	rm -rf "$target"
+}
+
 download_and_extract_bootstrap() {
 	local sha256 filename
+	discard_stale_bootstrap_root
 	download iso/latest/sha256sums.txt | grep -E "[[:digit:]]-$cpu_type.tar.zst" > "sha256sums.txt"
 	read -r sha256 filename < "sha256sums.txt"
 	download "iso/latest/$filename" > "$filename"
